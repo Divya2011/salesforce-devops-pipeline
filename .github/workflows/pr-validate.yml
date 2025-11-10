@@ -1,0 +1,27 @@
+name: PR Validate (Dev)
+
+on:
+  pull_request:
+    branches: [develop]     # When a PR is created targeting the 'develop' branch
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest   # GitHub-hosted Linux runner (free)
+    steps:
+      # Step 1: Check out your repo code
+      - uses: actions/checkout@v4
+
+      # Step 2: Install Salesforce CLI in the runner
+      - uses: sfdx-actions/setup-sfdx@v1
+
+      # Step 3: Authenticate to your Dev scratch org using the secret
+      - name: Auth to Dev Scratch Org
+        run: |
+          echo "${{ secrets.DEV_SFDX_AUTH_URL }}" > sfdx_auth.txt
+          sfdx auth:sfdxurl:store -f sfdx_auth.txt -a DevScratch
+
+      # Step 4: Validate metadata (CheckOnly = simulation)
+      - name: Validate Deployment (CheckOnly)
+        run: |
+          sfdx force:source:convert -r force-app -d mdapi_output
+          sfdx force:mdapi:deploy -d mdapi_output -u DevScratch --checkonly --wait 10
