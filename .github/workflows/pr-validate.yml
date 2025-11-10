@@ -2,7 +2,7 @@ name: PR Validate (Dev)
 
 on:
   pull_request:
-    branches: [develop]     # When a PR is created targeting the 'develop' branch
+    branches: [uatbranch]     # When a PR is created targeting the 'develop' branch
 
 jobs:
   validate:
