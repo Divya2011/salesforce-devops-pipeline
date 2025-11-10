@@ -1,0 +1,27 @@
+name: Deploy to UAT
+
+on:
+  push:
+    branches: [uatbranch]       # triggers when commits are pushed or PRs merged into uatbranch
+
+jobs:
+  deploy-uat:
+    runs-on: ubuntu-latest
+    steps:
+      # 1️⃣ Pull code from GitHub
+      - uses: actions/checkout@v4
+
+      # 2️⃣ Install Salesforce CLI
+      - uses: sfdx-actions/setup-sfdx@v1
+
+      # 3️⃣ Authenticate to UAT using the secret we already set
+      - name: Auth to UAT Org
+        run: |
+          echo "${{ secrets.UAT_SFDX_AUTH_URL }}" > sfdx_auth.txt
+          sf org login sfdx-url -f sfdx_auth.txt -a UAT
+
+      # 4️⃣ Convert and deploy source
+      - name: Convert and Deploy to UAT
+        run: |
+          sfdx force:source:convert -r force-app -d mdapi_output
+          sf project deploy start -d mdapi_output -o UAT --wait 30 --test-level RunLocalTests
