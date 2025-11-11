@@ -22,6 +22,14 @@ jobs:
 
       # 4️⃣ Convert and deploy source
       - name: Convert and Deploy to UAT
-        run: |
-          sf project convert source --root-dir force-app --output-dir mdapi_output
-          sf project deploy start -d mdapi_output -o UAT --ignore-conflicts --wait 30 --test-level RunLocalTests
+  run: |
+    sf project convert source --root-dir force-app --output-dir mdapi_output
+    sf project deploy start -d mdapi_output -o UAT --ignore-conflicts --wait 30 --test-level RunLocalTests --json > deploy.json
+    STATUS=$(jq -r '.result.status' deploy.json)
+    if [ "$STATUS" = "Succeeded" ]; then
+      echo "✅ Deployment succeeded."
+    else
+      echo "❌ Deployment failed."
+      cat deploy.json
+      exit 1
+    fi
