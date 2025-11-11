@@ -2,10 +2,12 @@ name: PR Validate (Prod)
 
 on:
   pull_request:
-    branches: [main]   # Runs when a PR targets main branch
+    types: [opened, synchronize, reopened]
+    branches: [main]
 
 jobs:
   validate-prod:
+    if: github.base_ref == 'main'      # 👈 Prevents running for UAT PRs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
