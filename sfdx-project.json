@@ -8,5 +8,5 @@
   "name": "DevopsGitLearning",
   "namespace": "",
   "sfdcLoginUrl": "https://login.salesforce.com",
-  "sourceApiVersion": "auto"
+  "sourceApiVersion": "65.0"
 }
