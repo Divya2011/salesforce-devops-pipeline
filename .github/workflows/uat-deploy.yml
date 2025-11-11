@@ -3,7 +3,7 @@ name: Deploy to UAT
 on:
   push:
     branches:
-      - uatbranch # Or the branch you merge to for UAT deployments
+      - uatBranchNew # Or the branch you merge to for UAT deployments
     paths:
       - 'force-app/**'
   workflow_dispatch: # Allows manual triggering
