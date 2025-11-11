@@ -1,0 +1,25 @@
+name: PR Validate (Prod)
+
+# 👇 This guard ensures the entire workflow won't run unless the PR target is main
+if: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' }}
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  validate-prod:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sfdx-actions/setup-sfdx@v1
+
+      - name: Auth to Prod Org
+        run: |
+          echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > sfdx_auth.txt
+          sf org login sfdx-url -f sfdx_auth.txt -a Prod
+
+      - name: Validate Deployment (CheckOnly)
+        run: |
+          sfdx force:source:convert -r force-app -d mdapi_output
+          sf project deploy start -d mdapi_output -o Prod --dry-run --wait 40 --test-level RunLocalTests

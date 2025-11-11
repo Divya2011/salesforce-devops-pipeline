@@ -1,0 +1,29 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]   # Runs when code is merged/pushed into main branch
+
+jobs:
+  deploy-prod:
+    runs-on: ubuntu-latest
+    environment:
+      name: production   # Optional: manual approval gate
+      url: https://divya-metacube-dev-ed.my.salesforce-setup.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sfdx-actions/setup-sfdx@v1
+
+      - name: Auth to Production Org
+        run: |
+          echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > sfdx_auth.txt
+          sf org login sfdx-url -f sfdx_auth.txt -a Prod
+
+      - name: Deploy to Production
+        run: |
+          sfdx force:source:convert -r force-app -d mdapi_output
+          sf project deploy start -d mdapi_output -o Prod --wait 50 --test-level RunLocalTests
+
+      - name: Print Summary
+        run: |
+          echo "🚀 Deployment to Production (main) completed successfully" >> $GITHUB_STEP_SUMMARY
