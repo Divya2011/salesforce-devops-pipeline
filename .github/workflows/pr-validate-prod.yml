@@ -1,49 +1,22 @@
-name: Validate PR on Production branch
+name: PR Validate (Prod)
 
 on:
   pull_request:
-    types: [opened, synchronize]
-    branches: [ main ]
-    paths:
-      - 'force-app/**'
-
+    types: [opened, synchronize, reopened]
+    branches: [main]
 jobs:
-  validate-deployment-on-production-org:
+  validate-prod:
     runs-on: ubuntu-latest
-    if: ${{ github.actor != 'dependabot[bot]' }}
     steps:
-      - uses: actions/setup-node@v3
-        with:
-          node-version: '14'
+      - uses: actions/checkout@v4
+      - uses: sfdx-actions/setup-sfdx@v1
 
-      - name: 'Checkout source code'
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-
-      - name: 'Install Salesforce CLI'
+      - name: Auth to Prod Org
         run: |
-          wget https://developer.salesforce.com/media/salesforce-cli/sfdx/channels/stable/sfdx-linux-x64.tar.xz
-          mkdir ~/sfdx
-          tar xJf sfdx-linux-x64.tar.xz -C ~/sfdx --strip-components 1
-          echo "$HOME/sfdx/bin" >> $GITHUB_PATH
-          ~/sfdx/bin/sfdx version
+          echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > sfdx_auth.txt
+          sf org login sfdx-url -f sfdx_auth.txt -a Prod
 
-      - name: 'Installing sfdx git delta'
+      - name: Validate Deployment (CheckOnly)
         run: |
-          echo y | sfdx plugins:install sfdx-git-delta
-          sfdx plugins
-
-      - name: 'Populate auth file with SFDX_URL secret of Production org'
-        run: echo ${{ secrets.SFDX_PROD_URL }} > ./SFDX_PROD_URL.txt
-
-      - name: 'Authenticate to Production Org'
-        run: sfdx auth:sfdxurl:store -f ./SFDX_PROD_URL.txt -s -a production
-
-      - name: 'Create delta packages for new, modified or deleted metadata'
-        run: |
-          mkdir changed-sources
-          sfdx sgd:source:delta --to "HEAD" --from "HEAD^" --output changed-sources/ --generate-delta --source force-app/
-
-      - name: 'Check-only deploy delta changes'
-        run: sfdx force:source:deploy -p "changed-sources/force-app" --checkonly --testlevel RunLocalTests --json
+          sf project convert source --root-dir force-app --output-dir mdapi_output
+          sf project deploy start -d mdapi_output -o Prod --dry-run --wait 40 --test-level RunLocalTests

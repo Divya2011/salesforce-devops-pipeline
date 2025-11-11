@@ -1,47 +1,40 @@
-name: Deploy UAT branch to UAT org
+name: Deploy to UAT
 
 on:
   push:
-    branches: [ uatbranch ]
+    branches:
+      - uatbranch # Or the branch you merge to for UAT deployments
     paths:
       - 'force-app/**'
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
-  deploy-uat:
+  deploy:
     runs-on: ubuntu-latest
-    if: ${{ github.actor != 'dependabot[bot]' }}
     steps:
-      - name: 'Install Salesforce CLI'
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+
+      - name: Update Salesforce CLI
+        run: sf update
+
+      - name: Authenticate to Salesforce Org (UAT)
         run: |
-          wget https://developer.salesforce.com/media/salesforce-cli/sfdx/channels/stable/sfdx-linux-x64.tar.xz
-          mkdir ~/sfdx
-          tar xJf sfdx-linux-x64.tar.xz -C ~/sfdx --strip-components 1
-          echo "$HOME/sfdx/bin" >> $GITHUB_PATH
-          ~/sfdx/bin/sfdx version
+          echo "${{ secrets.UAT_SFDX_AUTH_URL }}" > sfdx_auth_url_uat.txt
+          sf org login sfdx-url -f sfdx_auth_url_uat.txt --alias uatorg --set-default
+        env:
+          UAT_SFDX_AUTH_URL: ${{ secrets.UAT_SFDX_AUTH_URL }}
 
-      - name: 'Installing sfdx git delta'
-        run: |
-          echo y | sfdx plugins:install sfdx-git-delta
-          sfdx plugins
+      # Option 1 (Recommended) - Direct deployment of source folder
+      - name: Deploy to UAT
+        run: sf project deploy start --source-dir force-app --test-level RunLocalTests -o uatorg --ignore-conflicts --wait 40
 
-      - name: 'Checkout source code'
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-
-      - name: 'Populate auth file with SFDX_URL secret of UAT org'
-        run: echo ${{ secrets.SFDX_UAT_URL }} > ./SFDX_UAT_URL.txt
-
-      - name: 'Create delta packages for new, modified or deleted metadata'
-        run: |
-          mkdir changed-sources
-          sfdx sgd:source:delta --to "HEAD" --from "HEAD^" --output changed-sources/ --generate-delta --source force-app/
-
-      - name: 'Authenticate to UAT Org'
-        run: sfdx auth:sfdxurl:store -f ./SFDX_UAT_URL.txt -s -a uat
-
-      - name: 'Deploy the entire branch to UAT org'
-        run: sfdx force:source:deploy -p force-app --testlevel RunLocalTests --json
-
-      - name: 'Deploy destructive changes (if any) to UAT org'
-        run: sfdx force:mdapi:deploy -d "changed-sources/destructiveChanges" --checkonly --ignorewarnings
+      # Option 2 (If you prefer manifest-based deployment)
+      # - name: Generate Manifest
+      #   run: sf project generate manifest --from-source --output-dir manifest
+      #
+      # - name: Deploy using Manifest
+      #   run: sf project deploy start --metadata-dir manifest --test-level RunLocalTests -o uatorg --ignore-conflicts --wait 40
