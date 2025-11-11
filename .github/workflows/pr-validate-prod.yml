@@ -3,30 +3,29 @@ name: PR Validate (Prod)
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches: [main]
 
 jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip if not PR to main
+        if: ${{ github.event.pull_request.base.ref != 'main' }}
+        run: |
+          echo "Skipping Prod validation — PR target is ${{ github.event.pull_request.base.ref }}"
+          exit 0
+
   validate-prod:
-    # 👇 Guard condition: only run when the PR's target is main
+    needs: guard
     if: ${{ github.event.pull_request.base.ref == 'main' }}
     runs-on: ubuntu-latest
-
     steps:
-      - name: Show PR context (debug)
-        run: |
-          echo "event_name = ${{ github.event_name }}"
-          echo "base_ref   = ${{ github.event.pull_request.base.ref }}"
-          echo "head_ref   = ${{ github.event.pull_request.head.ref }}"
-
       - uses: actions/checkout@v4
       - uses: sfdx-actions/setup-sfdx@v1
-
       - name: Auth to Prod Org
         run: |
           echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > sfdx_auth.txt
           sf org login sfdx-url -f sfdx_auth.txt -a Prod
-
-      - name: Validate Deployment (CheckOnly)
+      - name: Validate Deployment
         run: |
-          sfdx force:source:convert -r force-app -d mdapi_output
+          sf project convert source --root-dir force-app --output-dir mdapi_output
           sf project deploy start -d mdapi_output -o Prod --dry-run --wait 40 --test-level RunLocalTests
