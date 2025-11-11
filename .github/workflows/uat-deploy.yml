@@ -23,6 +23,5 @@ jobs:
       # 4️⃣ Convert and deploy source
       - name: Convert and Deploy to UAT
         run: |
-          sfdx force:source:convert -r force-app -d mdapi_output
+          sf project convert source --root-dir force-app --output-dir mdapi_output
           sf project deploy start -d mdapi_output -o UAT --ignore-conflicts --wait 30 --test-level RunLocalTests
-
