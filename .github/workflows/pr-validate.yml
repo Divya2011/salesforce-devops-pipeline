@@ -1,27 +1,22 @@
-name: PR Validate (Dev)
+name: PR Validate (UAT)
 
 on:
   pull_request:
-    branches: [develop]     # When a PR is created targeting the 'develop' branch
+    branches: [uatbranch]   # Run when PR targets uatbranch
 
 jobs:
   validate:
-    runs-on: ubuntu-latest   # GitHub-hosted Linux runner (free)
+    runs-on: ubuntu-latest
     steps:
-      # Step 1: Check out your repo code
       - uses: actions/checkout@v4
-
-      # Step 2: Install Salesforce CLI in the runner
       - uses: sfdx-actions/setup-sfdx@v1
 
-      # Step 3: Authenticate to your Dev scratch org using the secret
-      - name: Auth to Dev Scratch Org
+      - name: Auth to UAT Org
         run: |
-          echo "${{ secrets.DEV_SFDX_AUTH_URL }}" > sfdx_auth.txt
-          sfdx auth:sfdxurl:store -f sfdx_auth.txt -a DevScratch
+          echo "${{ secrets.UAT_SFDX_AUTH_URL }}" > sfdx_auth.txt
+          sf org login sfdx-url -f sfdx_auth.txt -a UAT
 
-      # Step 4: Validate metadata (CheckOnly = simulation)
-      - name: Validate Deployment (CheckOnly)
+      - name: Validate Deployment and Run Tests
         run: |
           sfdx force:source:convert -r force-app -d mdapi_output
-          sfdx force:mdapi:deploy -d mdapi_output -u DevScratch --checkonly --wait 10
+          sf project deploy start -d mdapi_output -o UAT --dry-run --ignore-conflicts --wait 20 --test-level RunLocalTests
