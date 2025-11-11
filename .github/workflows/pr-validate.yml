@@ -2,7 +2,7 @@ name: PR Validate (UAT)
 
 on:
   pull_request:
-    branches: [uatbranch]   # Run when PR targets uatbranch
+    branches: [uatBranchNew]   # Run when PR targets uatbranch
 
 jobs:
   validate:
