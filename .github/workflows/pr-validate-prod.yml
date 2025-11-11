@@ -1,16 +1,23 @@
 name: PR Validate (Prod)
 
-# 👇 This guard ensures the entire workflow won't run unless the PR target is main
-if: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' }}
-
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    branches: [main]
 
 jobs:
   validate-prod:
+    # 👇 Guard condition: only run when the PR's target is main
+    if: ${{ github.event.pull_request.base.ref == 'main' }}
     runs-on: ubuntu-latest
+
     steps:
+      - name: Show PR context (debug)
+        run: |
+          echo "event_name = ${{ github.event_name }}"
+          echo "base_ref   = ${{ github.event.pull_request.base.ref }}"
+          echo "head_ref   = ${{ github.event.pull_request.head.ref }}"
+
       - uses: actions/checkout@v4
       - uses: sfdx-actions/setup-sfdx@v1
 
