@@ -19,4 +19,4 @@ jobs:
       - name: Validate Deployment and Run Tests
         run: |
           sfdx force:source:convert -r force-app -d mdapi_output
-          sf project deploy start -d mdapi_output -o UAT --dry-run --wait 20 --test-level RunLocalTests
+          sf project deploy start -d mdapi_output -o UAT --dry-run --ignore-conflicts --wait 20 --test-level RunLocalTests

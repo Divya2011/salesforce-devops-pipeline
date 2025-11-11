@@ -7,18 +7,21 @@ on:
 
 jobs:
   validate-prod:
-    if: github.base_ref == 'main'      # 👈 Prevents running for UAT PRs
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: sfdx-actions/setup-sfdx@v1
+      - name: Debug GitHub Context
+        run: |
+          echo "github.ref = ${{ github.ref }}"
+          echo "github.base_ref = ${{ github.base_ref }}"
+          echo "github.head_ref = ${{ github.head_ref }}"
 
       - name: Auth to Prod Org
         run: |
           echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > sfdx_auth.txt
           sf org login sfdx-url -f sfdx_auth.txt -a Prod
 
-      - name: Validate Deployment (CheckOnly) on Prod
+      - name: Validate Deployment (CheckOnly)
         run: |
           sfdx force:source:convert -r force-app -d mdapi_output
           sf project deploy start -d mdapi_output -o Prod --dry-run --wait 40 --test-level RunLocalTests
