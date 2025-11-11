@@ -3,9 +3,7 @@ name: PR Validate (Prod)
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    branches:
-      - main  # ✅ Only PRs to main trigger this workflow
-
+    branches: [main]
 jobs:
   validate-prod:
     runs-on: ubuntu-latest

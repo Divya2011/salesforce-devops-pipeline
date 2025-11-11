@@ -2,10 +2,10 @@ name: PR Validate (PreProd)
 
 on:
   pull_request:
-    branches: [preprodbranch]   # Runs when a PR targets preprodbranch
+    branches: [preprodbranch]   # Run when PR targets preprodbranch
 
 jobs:
-  validate-preprod:
+  validate - preprod:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,7 +16,7 @@ jobs:
           echo "${{ secrets.PREPROD_SFDX_AUTH_URL }}" > sfdx_auth.txt
           sf org login sfdx-url -f sfdx_auth.txt -a PreProd
 
-      - name: Validate Deployment (CheckOnly) on PreProd
+      - name: Validate Deployment and Run Tests
         run: |
           sfdx force:source:convert -r force-app -d mdapi_output
-          sf project deploy start -d mdapi_output -o PreProd --dry-run --wait 30 --test-level RunLocalTests
+          sf project deploy start -d mdapi_output -o PreProd --dry-run --ignore-conflicts --wait 20 --test-level RunLocalTests
