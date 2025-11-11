@@ -2,34 +2,31 @@ name: Deploy to UAT
 
 on:
   push:
-    branches: [uatbranch]       # triggers when commits are pushed or PRs merged into uatbranch
+    branches:
+      - uatbranch # Or the branch you merge to for UAT deployments
+    paths:
+      - 'force-app/**'
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
-  deploy-uat:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      # 1️⃣ Pull code from GitHub
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # 2️⃣ Install Salesforce CLI
-      - uses: sfdx-actions/setup-sfdx@v1
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
 
-      # 3️⃣ Authenticate to UAT using the secret we already set
-      - name: Auth to UAT Org
+      - name: Authenticate to Salesforce Org (UAT)
         run: |
-          echo "${{ secrets.UAT_SFDX_AUTH_URL }}" > sfdx_auth.txt
-          sf org login sfdx-url -f sfdx_auth.txt -a UAT
+          echo "${{ secrets.UAT_SFDX_AUTH_URL }}" > sfdx_auth_url_uat.txt
+          sf org login sfdx-url -f sfdx_auth_url_uat.txt --alias uatorg --set-default
+        env:
+          UAT_SFDX_AUTH_URL: ${{ secrets.UAT_SFDX_AUTH_URL }} # Stored as a GitHub secret
 
-      # 4️⃣ Convert and deploy source
-      - name: Convert and Deploy to UAT
-  run: |
-    sf project convert source --root-dir force-app --output-dir mdapi_output
-    sf project deploy start -d mdapi_output -o UAT --ignore-conflicts --wait 30 --test-level RunLocalTests --json > deploy.json
-    STATUS=$(jq -r '.result.status' deploy.json)
-    if [ "$STATUS" = "Succeeded" ]; then
-      echo "✅ Deployment succeeded."
-    else
-      echo "❌ Deployment failed."
-      cat deploy.json
-      exit 1
-    fi
+      - name: Generate Package.xml (if needed)
+        run: sf project generate packagexml --from-source --output-dir manifest
+
+      - name: Deploy to UAT
+        run: sf project deploy start --metadata-dir manifest --test-level RunLocalTests -o uatorg --ignore-conflicts --wait 40
