@@ -2,25 +2,39 @@ name: Deploy to PreProd
 
 on:
   push:
-    branches: [preprodbranch]   # Runs when code is merged/pushed into preprodbranch
+    branches:
+      - preprodbranch # Or the branch you merge to for preprod deployments
+    paths:
+      - 'force-app/**'
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
-  deploy-preprod:
+  deploy-PreProd:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: sfdx-actions/setup-sfdx@v1
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Auth to PreProd Org
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+
+      - name: Update Salesforce CLI
+        run: sf update
+
+      - name: Authenticate to Salesforce Org (PreProd)
         run: |
-          echo "${{ secrets.PREPROD_SFDX_AUTH_URL }}" > sfdx_auth.txt
-          sf org login sfdx-url -f sfdx_auth.txt -a PreProd
+          echo "${{ secrets.PREPROD_SFDX_AUTH_URL }}" > sfdx_auth_url_preprod.txt
+          sf org login sfdx-url -f sfdx_auth_url_preprod.txt --alias preprodorg --set-default
+        env:
+          PREPROD_SFDX_AUTH_URL: ${{ secrets.PREPROD_SFDX_AUTH_URL }}
 
+      # Option 1 (Recommended) - Direct deployment of source folder
       - name: Deploy to PreProd
-        run: |
-          sfdx force:source:convert -r force-app -d mdapi_output
-          sf project deploy start -d mdapi_output -o PreProd --wait 40 --test-level RunLocalTests
+        run: sf project deploy start --source-dir force-app --test-level RunLocalTests -o preprodorg --ignore-conflicts --wait 40
 
-      - name: Print Summary
-        run: |
-          echo "✅ Deployment to PreProd (preprodbranch) succeeded" >> $GITHUB_STEP_SUMMARY
+      # Option 2 (If you prefer manifest-based deployment)
+      # - name: Generate Manifest
+      #   run: sf project generate manifest --from-source --output-dir manifest
+      #
+      # - name: Deploy using Manifest
+      #   run: sf project deploy start --metadata-dir manifest --test-level RunLocalTests -o uatorg --ignore-conflicts --wait 40
