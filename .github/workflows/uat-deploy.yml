@@ -1,0 +1,40 @@
+name: Deploy to UAT
+
+on:
+  push:
+    branches:
+      - uatBranchNew # Or the branch you merge to for UAT deployments
+    paths:
+      - 'force-app/**'
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+
+      - name: Update Salesforce CLI
+        run: sf update
+
+      - name: Authenticate to Salesforce Org (UAT)
+        run: |
+          echo "${{ secrets.UAT_SFDX_AUTH_URL }}" > sfdx_auth_url_uat.txt
+          sf org login sfdx-url -f sfdx_auth_url_uat.txt --alias uatorg --set-default
+        env:
+          UAT_SFDX_AUTH_URL: ${{ secrets.UAT_SFDX_AUTH_URL }}
+
+      # Option 1 (Recommended) - Direct deployment of source folder
+      - name: Deploy to UAT
+        run: sf project deploy start --source-dir force-app --test-level RunLocalTests -o uatorg --ignore-conflicts --wait 40
+
+      # Option 2 (If you prefer manifest-based deployment)
+      # - name: Generate Manifest
+      #   run: sf project generate manifest --from-source --output-dir manifest
+      #
+      # - name: Deploy using Manifest
+      #   run: sf project deploy start --metadata-dir manifest --test-level RunLocalTests -o uatorg --ignore-conflicts --wait 40
