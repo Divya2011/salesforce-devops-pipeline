@@ -2,28 +2,39 @@ name: Deploy to Production
 
 on:
   push:
-    branches: [main]   # Runs when code is merged/pushed into main branch
+    branches:
+      - main # Or the branch you merge to for prod deployments
+    paths:
+      - 'force-app/**'
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
-  deploy-prod:
+  deploy-production:
     runs-on: ubuntu-latest
-    environment:
-      name: production   # Optional: manual approval gate
-      url: https://divya-metacube-dev-ed.my.salesforce-setup.com
     steps:
-      - uses: actions/checkout@v4
-      - uses: sfdx-actions/setup-sfdx@v1
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Auth to Production Org
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+
+      - name: Update Salesforce CLI
+        run: sf update
+
+      - name: Authenticate to Salesforce Org (production)
         run: |
-          echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > sfdx_auth.txt
-          sf org login sfdx-url -f sfdx_auth.txt -a Prod
+          echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > sfdx_auth_url_prod.txt
+          sf org login sfdx-url -f sfdx_auth_url_prod.txt --alias prodorg --set-default
+        env:
+          PROD_SFDX_AUTH_URL: ${{ secrets.PROD_SFDX_AUTH_URL }}
 
+      # Option 1 (Recommended) - Direct deployment of source folder
       - name: Deploy to Production
-        run: |
-          sfdx force:source:convert -r force-app -d mdapi_output
-          sf project deploy start -d mdapi_output -o Prod --wait 50 --test-level RunLocalTests
+        run: sf project deploy start --source-dir force-app --test-level RunLocalTests -o prodorg --ignore-conflicts --wait 40
 
-      - name: Print Summary
-        run: |
-          echo "🚀 Deployment to Production (main) completed successfully" >> $GITHUB_STEP_SUMMARY
+      # Option 2 (If you prefer manifest-based deployment)
+      # - name: Generate Manifest
+      #   run: sf project generate manifest --from-source --output-dir manifest
+      #
+      # - name: Deploy using Manifest
+      #   run: sf project deploy start --metadata-dir manifest --test-level RunLocalTests -o uatorg --ignore-conflicts --wait 40
