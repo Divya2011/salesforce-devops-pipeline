@@ -96,7 +96,7 @@ jobs:
           echo "PR Source branch: $SOURCE_BRANCH"
 
           # 3) Final check
-          if [[ "$SOURCE_BRANCH" == hotfix/* ]]; then
+          if [[ "$SOURCE_BRANCH" == hotfix* ]]; then
             echo "🔥 HOTFIX MERGE DETECTED"
             echo "is_hotfix=true" >> $GITHUB_OUTPUT
           else
