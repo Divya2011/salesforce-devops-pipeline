@@ -91,7 +91,7 @@ jobs:
       fail-fast: false
       # convert "preprodbranch uatbranch feature" → ["preprodbranch","uatbranch","feature"]
       matrix:
-        branch: ${{ fromJson(format('["{0}"]', join('","', split(vars.SYNC_BRANCHES, ' ') ))) }}
+        branch: ${{ fromJson(vars.SYNC_BRANCHES) }}
 
     steps:
 
