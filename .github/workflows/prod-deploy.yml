@@ -1,19 +1,32 @@
-name: Deploy to Production
+name: Deploy to Production (Hotfix + Auto Back-Sync)
 
 on:
   push:
     branches:
-      - main # Or the branch you merge to for prod deployments
+      - main
     paths:
-      - 'force-app/**'
-  workflow_dispatch: # Allows manual triggering
+      - "force-app/**"
+  workflow_dispatch:
+
+# Configure this in GitHub → Repo → Settings → Variables → SYNC_BRANCHES
+# Example value: preprodbranch uatbranch feature
+env:
+  SYNC_BRANCHES: ${{ vars.SYNC_BRANCHES || 'preprodbranch uatbranch feature' }}
 
 jobs:
+
+  ###########################################################################
+  # 1️⃣ DEPLOY TO PRODUCTION
+  ###########################################################################
   deploy-production:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+
+      - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Salesforce CLI
         run: npm install -g @salesforce/cli
@@ -21,20 +34,81 @@ jobs:
       - name: Update Salesforce CLI
         run: sf update
 
-      - name: Authenticate to Salesforce Org (production)
+      - name: Authenticate to Production
         run: |
-          echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > sfdx_auth_url_prod.txt
-          sf org login sfdx-url -f sfdx_auth_url_prod.txt --alias prodorg --set-default
-        env:
-          PROD_SFDX_AUTH_URL: ${{ secrets.PROD_SFDX_AUTH_URL }}
+          echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > prod_auth.txt
+          sf org login sfdx-url -f prod_auth.txt --alias prodorg --set-default
 
-      # Option 1 (Recommended) - Direct deployment of source folder
       - name: Deploy to Production
-        run: sf project deploy start --source-dir force-app --test-level RunLocalTests -o prodorg --ignore-conflicts --wait 40
+        run: |
+          sf project deploy start \
+            --source-dir force-app \
+            --test-level RunLocalTests \
+            --ignore-conflicts \
+            --wait 40 \
+            -o prodorg
 
-      # Option 2 (If you prefer manifest-based deployment)
-      # - name: Generate Manifest
-      #   run: sf project generate manifest --from-source --output-dir manifest
-      #
-      # - name: Deploy using Manifest
-      #   run: sf project deploy start --metadata-dir manifest --test-level RunLocalTests -o uatorg --ignore-conflicts --wait 40
+
+  ###########################################################################
+  # 2️⃣ DETECT HOTFIX MERGE (STRICT)
+  ###########################################################################
+  detect-hotfix:
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    outputs:
+      is_hotfix: ${{ steps.check_hotfix.outputs.is_hotfix }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Detect Hotfix Merge (Strict Pattern)
+        id: check_hotfix
+        run: |
+          COMMIT_MSG="$(git log -1 --pretty=%B)"
+          echo "Commit message:"
+          echo "$COMMIT_MSG"
+
+          # STRICT hotfix detection
+          if [[ "$COMMIT_MSG" == *"Merge pull request"* && "$COMMIT_MSG" == *"from hotfix/"* ]]; then
+            echo "is_hotfix=true" >> $GITHUB_OUTPUT
+            echo "🔥 Hotfix merge detected — enabling back-sync."
+          else
+            echo "is_hotfix=false" >> $GITHUB_OUTPUT
+            echo "⛔ Not a hotfix — skipping back-sync."
+          fi
+
+
+  ###########################################################################
+  # 3️⃣ AUTO BACK-SYNC TO LOWER ENVIRONMENT BRANCHES
+  ###########################################################################
+  backsync:
+    runs-on: ubuntu-latest
+    needs: detect-hotfix
+    if: needs.detect-hotfix.outputs.is_hotfix == 'true'
+
+    strategy:
+      fail-fast: false
+      # convert "preprodbranch uatbranch feature" → ["preprodbranch","uatbranch","feature"]
+      matrix:
+        branch: ${{ fromJson(format('["{0}"]', join('","', split(env.SYNC_BRANCHES, ' ') ))) }}
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup NodeJS (required by sync-branches)
+        uses: actions/setup-node@v3
+        with:
+          node-version: 12
+
+      - name: Sync main → ${{ matrix.branch }}
+        uses: tretuna/sync-branches@1.4.0
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FROM_BRANCH: "main"
+          TO_BRANCH: ${{ matrix.branch }}
+          PULL_REQUEST_AUTO_MERGE_METHOD: merge
