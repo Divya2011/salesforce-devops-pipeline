@@ -1,25 +1,32 @@
-name: Deploy to Production (Full-Proof Hotfix Back-Sync)
+name: Deploy to Production (Hotfix + Auto Back-Sync)
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'force-app/**'
+      - "force-app/**"
   workflow_dispatch:
 
+# Configure this in GitHub → Repo → Settings → Variables → SYNC_BRANCHES
+# Example value: preprodbranch uatbranch feature
 env:
-  SYNC_BRANCHES: "preprodbranch uatbranch feature"  # Branches to sync hotfixes to
+  SYNC_BRANCHES: ${{ vars.SYNC_BRANCHES || 'preprodbranch uatbranch feature' }}
 
 jobs:
+
+  ###########################################################################
+  # 1️⃣ DEPLOY TO PRODUCTION
+  ###########################################################################
   deploy-production:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Salesforce CLI
         run: npm install -g @salesforce/cli
@@ -27,115 +34,107 @@ jobs:
       - name: Update Salesforce CLI
         run: sf update
 
-      - name: Authenticate to Salesforce Org (Production)
+      - name: Authenticate to Production
         run: |
-          echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > sfdx_auth_url_prod.txt
-          sf org login sfdx-url -f sfdx_auth_url_prod.txt --alias prodorg --set-default
-        env:
-          PROD_SFDX_AUTH_URL: ${{ secrets.PROD_SFDX_AUTH_URL }}
+          echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > prod_auth.txt
+          sf org login sfdx-url -f prod_auth.txt --alias prodorg --set-default
 
       - name: Deploy to Production
-        run: sf project deploy start --source-dir force-app --test-level RunLocalTests -o prodorg --ignore-conflicts --wait 40
+        run: |
+          sf project deploy start \
+            --source-dir force-app \
+            --test-level RunLocalTests \
+            --ignore-conflicts \
+            --wait 40 \
+            -o prodorg
 
 
-  backsync-if-hotfix:
+  ###########################################################################
+  # 2️⃣ DETECT HOTFIX MERGE (STRICT)
+  ###########################################################################
+  detect-hotfix:
     runs-on: ubuntu-latest
     needs: deploy-production
-    if: success()
+    outputs:
+      is_hotfix: ${{ steps.check.outputs.is_hotfix }}
+
     steps:
-      - name: Checkout repository
+      - name: Checkout Repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Detect Hotfix Merge (Safe)
+        id: check
+        run: |
+          echo "Detecting if merge came from hotfix/* branch…"
+
+          # 1) Get PR number safely from merge commit
+          PR_NUMBER=$(git log -1 --pretty=%B | grep -oE 'pull request #[0-9]+' | grep -oE '[0-9]+' || true)
+
+          if [[ -z "$PR_NUMBER" ]]; then
+            echo "No PR number found → Not a PR merge. Marking as NOT hotfix."
+            echo "is_hotfix=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Detected PR number: $PR_NUMBER"
+
+          # 2) Call GitHub API safely
+          PR_DATA=$(curl -s \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER || true)
+
+          SOURCE_BRANCH=$(echo "$PR_DATA" | jq -r '.head.ref' 2>/dev/null || echo "")
+
+          if [[ -z "$SOURCE_BRANCH" || "$SOURCE_BRANCH" == "null" ]]; then
+            echo "Could not detect source branch → Marking as NOT hotfix."
+            echo "is_hotfix=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "PR Source branch: $SOURCE_BRANCH"
+
+          # 3) Final check
+          if [[ "$SOURCE_BRANCH" == hotfix* ]]; then
+            echo "🔥 HOTFIX MERGE DETECTED"
+            echo "is_hotfix=true" >> $GITHUB_OUTPUT
+          else
+            echo "⛔ Not a hotfix merge"
+            echo "is_hotfix=false" >> $GITHUB_OUTPUT
+          fi
+
+          exit 0
+  ###########################################################################
+  # 3️⃣ AUTO BACK-SYNC TO LOWER ENVIRONMENT BRANCHES
+  ###########################################################################
+  backsync:
+    runs-on: ubuntu-latest
+    needs: detect-hotfix
+    if: needs.detect-hotfix.outputs.is_hotfix == 'true'
+
+    strategy:
+      fail-fast: false
+      # convert "preprodbranch uatbranch feature" → ["preprodbranch","uatbranch","feature"]
+      matrix:
+        branch: ${{ fromJson(vars.SYNC_BRANCHES) }}
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify if merge originated from hotfix branch (Full-Proof Check)
-        id: check_hotfix
-        run: |
-          echo "🔍 Checking commit metadata to determine if this is a hotfix merge..."
-          
-          LAST_COMMIT_MSG=$(git log -1 --pretty=%B)
-          echo "Last commit message: $LAST_COMMIT_MSG"
-          echo "---------------------------------------------------"
+      - name: Setup NodeJS (required by sync-branches)
+        uses: actions/setup-node@v3
+        with:
+          node-version: 12
 
-          # Primary Check — Merge message pattern
-          if [[ "$LAST_COMMIT_MSG" == *"Merge pull request"* && "$LAST_COMMIT_MSG" == *"from hotfix/"* ]]; then
-            echo "✅ Hotfix merge detected by commit message pattern."
-            echo "is_hotfix=true" >> $GITHUB_ENV
-          else
-            echo "🔸 Not enough evidence from commit message. Checking PR details via GitHub API..."
-            
-            # Extract PR number from commit message (if available)
-            PR_NUMBER=$(echo "$LAST_COMMIT_MSG" | grep -oE '#[0-9]+' | tr -d '#')
-            
-            if [ -n "$PR_NUMBER" ]; then
-              echo "Found PR number: $PR_NUMBER"
-              PR_SOURCE_BRANCH=$(gh pr view $PR_NUMBER --json headRefName -q ".headRefName")
-              echo "Source branch from PR: $PR_SOURCE_BRANCH"
-              
-              if [[ "$PR_SOURCE_BRANCH" == hotfix/* ]]; then
-                echo "✅ Confirmed hotfix via PR branch name."
-                echo "is_hotfix=true" >> $GITHUB_ENV
-              else
-                echo "⚠️ PR source branch is not a hotfix branch ($PR_SOURCE_BRANCH)."
-                echo "is_hotfix=false" >> $GITHUB_ENV
-              fi
-            else
-              echo "⚠️ Could not extract PR number. Skipping back-sync."
-              echo "is_hotfix=false" >> $GITHUB_ENV
-            fi
-          fi
-          
-          echo "---------------------------------------------------"
-          echo "Final Hotfix Status: $is_hotfix"
-
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Configure Git
-        if: env.is_hotfix == 'true'
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-
-      - name: Perform Back-Sync to Lower Branches
-        if: env.is_hotfix == 'true'
-        run: |
-          echo "🚀 Starting back-sync to lower branches..."
-          for BRANCH in $SYNC_BRANCHES; do
-            echo "-----------------------------------------"
-            echo "🔄 Attempting sync main → $BRANCH"
-            git fetch origin $BRANCH
-            git checkout $BRANCH
-            if git merge origin/main --no-edit; then
-              git push origin $BRANCH
-              echo "✅ Successfully synced to $BRANCH"
-            else
-              echo "❌ Merge conflict while syncing main → $BRANCH"
-              echo "conflict_$BRANCH=true" >> $GITHUB_ENV
-              git merge --abort
-            fi
-          done
-          echo "✅ Back-sync process complete."
-
-      - name: Create Conflict PRs (if any conflicts)
-        if: env.is_hotfix == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "🔎 Checking for branches that had conflicts..."
-          for BRANCH in $SYNC_BRANCHES; do
-            CONFLICT_ENV="conflict_${BRANCH}"
-            if [ "${!CONFLICT_ENV}" = "true" ]; then
-              echo "⚠️ Conflict detected in $BRANCH — creating PR..."
-              git checkout -b backsync-fix-$BRANCH
-              git fetch origin main
-              git merge origin/main --no-commit --no-ff || true
-              git commit -am "Resolve conflicts from main → $BRANCH (hotfix back-sync)"
-              git push origin backsync-fix-$BRANCH
-              gh pr create --title "⚠️ Resolve Conflicts: main → $BRANCH (Hotfix Back-Sync)" \
-                --body "Automatic back-sync from main to $BRANCH failed due to conflicts.  
-                Please review and resolve manually." \
-                --base "$BRANCH" --head "backsync-fix-$BRANCH"
-            fi
-          done
+      - name: Sync main → ${{ matrix.branch }}
+        uses: tretuna/sync-branches@1.4.0
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FROM_BRANCH: "main"
+          TO_BRANCH: ${{ matrix.branch }}
+          PULL_REQUEST_AUTO_MERGE_METHOD: merge
