@@ -53,32 +53,51 @@ jobs:
   # 2️⃣ DETECT HOTFIX MERGE (STRICT)
   ###########################################################################
   detect-hotfix:
-    runs-on: ubuntu-latest
-    needs: deploy-production
-    outputs:
-      is_hotfix: ${{ steps.check_hotfix.outputs.is_hotfix }}
+  runs-on: ubuntu-latest
+  needs: deploy-production
+  outputs:
+    is_hotfix: ${{ steps.check.outputs.is_hotfix }}
 
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
+  steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-      - name: Detect Hotfix Merge (Strict Pattern)
-        id: check_hotfix
-        run: |
-          COMMIT_MSG="$(git log -1 --pretty=%B)"
-          echo "Commit message:"
-          echo "$COMMIT_MSG"
+    - name: Detect Hotfix Merge (Reliable PR detection)
+      id: check
+      run: |
+        echo "Detecting if merge came from hotfix/* branch…"
 
-          # STRICT hotfix detection
-          if [[ "$COMMIT_MSG" == *"Merge pull request"* && "$COMMIT_MSG" == *"from hotfix/"* ]]; then
-            echo "is_hotfix=true" >> $GITHUB_OUTPUT
-            echo "🔥 Hotfix merge detected — enabling back-sync."
-          else
-            echo "is_hotfix=false" >> $GITHUB_OUTPUT
-            echo "⛔ Not a hotfix — skipping back-sync."
-          fi
+        # 1) Extract PR number from merge commit message
+        PR_NUMBER=$(git log -1 --pretty=%B | grep -oE 'pull request #[0-9]+' | grep -oE '[0-9]+')
 
+        if [[ -z "$PR_NUMBER" ]]; then
+          echo "No PR number detected → Not a PR merge → Not hotfix."
+          echo "is_hotfix=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
 
+        echo "Detected PR number: $PR_NUMBER"
+
+        # 2) Get PR info using GitHub API
+        PR_DATA=$(curl -s \
+          -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER)
+
+        SOURCE_BRANCH=$(echo "$PR_DATA" | jq -r '.head.ref')
+
+        echo "PR Source branch: $SOURCE_BRANCH"
+
+        # 3) Hotfix detection
+        if [[ "$SOURCE_BRANCH" == hotfix/* ]]; then
+          echo "🔥 HOTFIX MERGE DETECTED"
+          echo "is_hotfix=true" >> $GITHUB_OUTPUT
+        else
+          echo "⛔ Not a hotfix merge"
+          echo "is_hotfix=false" >> $GITHUB_OUTPUT
+        fi
+        
   ###########################################################################
   # 3️⃣ AUTO BACK-SYNC TO LOWER ENVIRONMENT BRANCHES
   ###########################################################################
