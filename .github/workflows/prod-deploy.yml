@@ -56,29 +56,55 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-production
     outputs:
-      is_hotfix: ${{ steps.check_hotfix.outputs.is_hotfix }}
+      is_hotfix: ${{ steps.check.outputs.is_hotfix }}
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Detect Hotfix Merge (Strict Pattern)
-        id: check_hotfix
+      - name: Detect Hotfix Merge (Safe)
+        id: check
         run: |
-          COMMIT_MSG="$(git log -1 --pretty=%B)"
-          echo "Commit message:"
-          echo "$COMMIT_MSG"
+          echo "Detecting if merge came from hotfix/* branch…"
 
-          # STRICT hotfix detection
-          if [[ "$COMMIT_MSG" == *"Merge pull request"* && "$COMMIT_MSG" == *"from hotfix/"* ]]; then
-            echo "is_hotfix=true" >> $GITHUB_OUTPUT
-            echo "🔥 Hotfix merge detected — enabling back-sync."
-          else
+          # 1) Get PR number safely from merge commit
+          PR_NUMBER=$(git log -1 --pretty=%B | grep -oE 'pull request #[0-9]+' | grep -oE '[0-9]+' || true)
+
+          if [[ -z "$PR_NUMBER" ]]; then
+            echo "No PR number found → Not a PR merge. Marking as NOT hotfix."
             echo "is_hotfix=false" >> $GITHUB_OUTPUT
-            echo "⛔ Not a hotfix — skipping back-sync."
+            exit 0
           fi
 
+          echo "Detected PR number: $PR_NUMBER"
 
+          # 2) Call GitHub API safely
+          PR_DATA=$(curl -s \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER || true)
+
+          SOURCE_BRANCH=$(echo "$PR_DATA" | jq -r '.head.ref' 2>/dev/null || echo "")
+
+          if [[ -z "$SOURCE_BRANCH" || "$SOURCE_BRANCH" == "null" ]]; then
+            echo "Could not detect source branch → Marking as NOT hotfix."
+            echo "is_hotfix=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "PR Source branch: $SOURCE_BRANCH"
+
+          # 3) Final check
+          if [[ "$SOURCE_BRANCH" == hotfix* ]]; then
+            echo "🔥 HOTFIX MERGE DETECTED"
+            echo "is_hotfix=true" >> $GITHUB_OUTPUT
+          else
+            echo "⛔ Not a hotfix merge"
+            echo "is_hotfix=false" >> $GITHUB_OUTPUT
+          fi
+
+          exit 0
   ###########################################################################
   # 3️⃣ AUTO BACK-SYNC TO LOWER ENVIRONMENT BRANCHES
   ###########################################################################
@@ -91,7 +117,7 @@ jobs:
       fail-fast: false
       # convert "preprodbranch uatbranch feature" → ["preprodbranch","uatbranch","feature"]
       matrix:
-        branch: ${{ fromJson(format('["{0}"]', join('","', split(env.SYNC_BRANCHES, ' ') ))) }}
+        branch: ${{ fromJson(vars.SYNC_BRANCHES) }}
 
     steps:
 
@@ -111,4 +137,34 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FROM_BRANCH: "main"
           TO_BRANCH: ${{ matrix.branch }}
-          PULL_REQUEST_AUTO_MERGE_METHOD: merge
+
+      - name: Find PR number for ${{ matrix.branch }}
+        id: find_pr
+        run: |
+          echo "Searching for PR main -> ${{ matrix.branch }}"
+
+          PR=$(curl -s \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls?state=open&base=${{ matrix.branch }}&head=${{ github.repository_owner }}:main" \
+            | jq -r '.[0].number')
+
+          echo "Found PR: $PR"
+          echo "pr_number=$PR" >> $GITHUB_OUTPUT
+
+
+      - name: Auto-merge PR
+        if: steps.find_pr.outputs.pr_number != ''
+        run: |
+          PR=${{ steps.find_pr.outputs.pr_number }}
+          echo "Auto-merging PR #$PR"
+
+          STATUS=$(curl -s -o merge_output.json -w "%{http_code}" \
+            -X PUT \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/pulls/$PR/merge \
+            -d '{"merge_method":"merge"}')
+
+          echo "HTTP: $STATUS"
+          cat merge_output.json
+
