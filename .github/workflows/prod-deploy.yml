@@ -152,11 +152,40 @@ jobs:
           echo "pr_number=$PR" >> $GITHUB_OUTPUT
 
 
-      - name: Auto-merge PR
-        if: steps.find_pr.outputs.pr_number != ''
+      - name: Auto-merge PR (if created)
+        if: steps.sync.outputs.PULL_REQUEST_NUMBER != ''
+        shell: bash
         run: |
-          PR=${{ steps.find_pr.outputs.pr_number }}
-          echo "Auto-merging PR #$PR"
+          PR=${{ steps.sync.outputs.PULL_REQUEST_NUMBER }}
+          echo "Attempting auto-merge for PR #$PR"
+
+          ATTEMPTS=0
+          MERGEABLE="null"
+
+          while [[ "$ATTEMPTS" -lt 10 ]]; do
+            echo "Checking mergeability (attempt $((ATTEMPTS+1)))…"
+            curl -s \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/pulls/$PR > pr.json
+
+            MERGEABLE=$(jq -r '.mergeable' pr.json)
+            echo "Mergeable state: $MERGEABLE"
+
+            if [[ "$MERGEABLE" == "true" ]]; then
+              break
+            fi
+
+            sleep 6
+            ATTEMPTS=$((ATTEMPTS+1))
+          done
+
+          if [[ "$MERGEABLE" != "true" ]]; then
+            echo "❌ PR cannot be auto-merged (not mergeable)."
+            exit 0
+          fi
+
+          echo "Merging PR #$PR…"
 
           STATUS=$(curl -s -o merge_output.json -w "%{http_code}" \
             -X PUT \
@@ -165,6 +194,12 @@ jobs:
             https://api.github.com/repos/${{ github.repository }}/pulls/$PR/merge \
             -d '{"merge_method":"merge"}')
 
-          echo "HTTP: $STATUS"
+          echo "HTTP Status: $STATUS"
           cat merge_output.json
 
+          if [[ "$STATUS" == "200" ]]; then
+            echo "✅ PR #$PR successfully merged."
+          else
+            echo "❌ Failed to merge PR #$PR"
+            exit 1
+          fi
