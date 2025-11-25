@@ -22,6 +22,7 @@
 //adding comment to see difference 21
 //adding comment to see difference 22
 //adding comment to see difference 23
+//adding comment to see difference 24
 public class TestPipeline {
     public static void sayHello() {
         System.debug('Hello from PR validation!');
