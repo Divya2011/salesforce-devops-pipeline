@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 env:
-  SYNC_BRANCHES: ${{ vars.SYNC_BRANCHES || 'preprodbranch uatbranch feature' }}
+  SYNC_BRANCHES: ${{ vars.SYNC_BRANCHES || 'preprodbranch uatbranch feature/test-validation' }}
 
 jobs:
 
@@ -77,7 +77,7 @@ jobs:
       - name: Deploy Delta to PROD - RunLocalTests
         if: steps.delta.outputs.skip == 'false' && vars.PROD_TEST_CLASSES == 'ALL'
         run: |
-          echo "PROD_TEST_CLASSES=ALL → Running ALL LOCAL TESTS."
+          echo "PROD_TEST_CLASSES = ALL → Running ALL LOCAL TESTS."
           sf project deploy start \
             --manifest delta/package/package.xml \
             --test-level RunLocalTests \
@@ -111,9 +111,11 @@ jobs:
             exit 0
           fi
 
+          API_URL="https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER"
+          
           PR_DATA=$(curl -s \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER)
+            "$API_URL")
 
           SOURCE_BRANCH=$(echo "$PR_DATA" | jq -r '.head.ref')
 
@@ -142,7 +144,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.PAT_TOKEN }}   # 🔥 PAT
+          token: ${{ secrets.PAT_TOKEN }}   # 🔥 PAT HERE
 
       - name: Setup NodeJS
         uses: actions/setup-node@v3
@@ -152,18 +154,22 @@ jobs:
       - name: Sync main → ${{ matrix.branch }}
         uses: tretuna/sync-branches@1.4.0
         with:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}   # 🔥 PAT
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}   # 🔥 PAT HERE
           FROM_BRANCH: "main"
           TO_BRANCH: ${{ matrix.branch }}
 
       - name: Find PR number
         id: find_pr
         run: |
-          PR=$(curl -s \
-            -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \   # 🔥 PAT
-            "https://api.github.com/repos/${{ github.repository }}/pulls?state=open&base=${{ matrix.branch }}&head=${{ github.repository_owner }}:main" \
-            | jq -r '.[0].number')
+          API_URL="https://api.github.com/repos/${{ github.repository }}/pulls?state=open&base=${{ matrix.branch }}&head=${{ github.repository_owner }}:main"
 
+          echo "Calling URL: $API_URL"
+
+          PR=$(curl -s \
+            -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
+            "$API_URL" | jq -r '.[0].number')
+
+          echo "Found PR: $PR"
           echo "pr_number=$PR" >> $GITHUB_OUTPUT
 
       - name: Auto-merge PR
@@ -174,9 +180,10 @@ jobs:
 
           curl -s -o merge_output.json -w "%{http_code}" \
             -X PUT \
-            -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \   # 🔥 PAT
+            -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/${{ github.repository }}/pulls/$PR/merge \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/$PR/merge" \
             -d '{"merge_method":"merge"}'
 
+          echo "Merge Response:"
           cat merge_output.json
