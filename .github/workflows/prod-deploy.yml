@@ -66,7 +66,7 @@ jobs:
           sf project deploy start \
             --manifest delta/package/package.xml \
             --test-level RunSpecifiedTests \
-            --runtests "${{ vars.PROD_TEST_CLASSES }}" \
+            --tests  "${{ vars.PROD_TEST_CLASSES }}" \
             --ignore-conflicts \
             --wait 40 \
             -o prodorg
