@@ -1,4 +1,5 @@
 //adding change 1
+//adding change 2
 public with sharing class DummyService {
 
     // Simple method that returns a greeting
