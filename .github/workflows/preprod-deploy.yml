@@ -3,23 +3,27 @@ name: Deploy to PreProd
 on:
   push:
     branches:
-      - preprodbranch # Or the branch you merge to for preprod deployments
+      - preprodbranch   # When updates are merged into PreProd
     paths:
       - 'force-app/**'
-  workflow_dispatch: # Allows manual triggering
+
+  workflow_dispatch:  # Allow running manually
 
 jobs:
   deploy-PreProd:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # required for delta calculation
 
       - name: Install Salesforce CLI
         run: npm install -g @salesforce/cli
 
-      - name: Update Salesforce CLI
-        run: sf update
+      - name: Install SFDX Git Delta
+        run: echo y | sf plugins install sfdx-git-delta
 
       - name: Authenticate to Salesforce Org (PreProd)
         run: |
@@ -28,13 +32,51 @@ jobs:
         env:
           PREPROD_SFDX_AUTH_URL: ${{ secrets.PREPROD_SFDX_AUTH_URL }}
 
-      # Option 1 (Recommended) - Direct deployment of source folder
-      - name: Deploy to PreProd
-        run: sf project deploy start --source-dir force-app --test-level RunLocalTests -o preprodorg --ignore-conflicts --wait 40
 
-      # Option 2 (If you prefer manifest-based deployment)
-      # - name: Generate Manifest
-      #   run: sf project generate manifest --from-source --output-dir manifest
-      #
-      # - name: Deploy using Manifest
-      #   run: sf project deploy start --metadata-dir manifest --test-level RunLocalTests -o uatorg --ignore-conflicts --wait 40
+      ###################################################################
+      # Generate Delta Package
+      ###################################################################
+      - name: Generate Delta
+        id: delta
+        run: |
+          mkdir -p delta
+
+          sf sgd:source:delta \
+            --to "$GITHUB_SHA" \
+            --from "HEAD^" \
+            --output-dir delta \
+            --generate-delta \
+            --source force-app/
+
+          echo "Generated package.xml:"
+          cat delta/package/package.xml || echo "NO DELTA FOUND"
+
+          if [ ! -s delta/package/package.xml ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+
+      ###################################################################
+      # Deploy DELTA (NO TESTS)
+      ###################################################################
+      - name: Deploy Delta to PreProd (No Tests)
+        if: steps.delta.outputs.skip == 'false'
+        run: |
+          echo "Deploying delta to PreProd with NO test execution..."
+
+          sf project deploy start \
+            --manifest delta/package/package.xml \
+            --test-level NoTestRun \
+            --ignore-conflicts \
+            --wait 40 \
+            -o preprodorg
+
+
+      ###################################################################
+      # Skip if no delta found
+      ###################################################################
+      - name: No Delta Found — Skipping Deployment
+        if: steps.delta.outputs.skip == 'true'
+        run: echo "No metadata differences detected — skipping deployment."
