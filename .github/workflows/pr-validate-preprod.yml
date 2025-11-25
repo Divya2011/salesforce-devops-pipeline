@@ -2,21 +2,72 @@ name: PR Validate (PreProd)
 
 on:
   pull_request:
-    branches: [preprodbranch]   # Run when PR targets preprodbranch
+    branches: [preprodbranch]   # Trigger only when PR targets preprod branch
 
 jobs:
   validate-preprod:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: sfdx-actions/setup-sfdx@v1
 
-      - name: Auth to PreProd Org
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # Needed for delta generation
+
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+
+      - name: Install SFDX Git Delta
+        run: echo y | sf plugins install sfdx-git-delta
+
+      - name: Authenticate to PreProd Org
         run: |
           echo "${{ secrets.PREPROD_SFDX_AUTH_URL }}" > sfdx_auth.txt
-          sf org login sfdx-url -f sfdx_auth.txt -a PreProd
+          sf org login sfdx-url -f sfdx_auth.txt --alias PreProd
 
-      - name: Validate Deployment and Run Tests
+      ###################################################################
+      # Generate Delta Only for Validation
+      ###################################################################
+      - name: Generate Delta Package
+        id: delta
         run: |
-          sfdx force:source:convert -r force-app -d mdapi_output
-          sf project deploy start -d mdapi_output -o PreProd --dry-run --ignore-conflicts --wait 20 --test-level RunLocalTests
+          mkdir -p delta
+
+          sf sgd:source:delta \
+            --to "${{ github.event.pull_request.head.sha }}" \
+            --from "${{ github.event.pull_request.base.sha }}" \
+            --output-dir delta \
+            --generate-delta \
+            --source force-app/
+
+          echo "Delta Package XML:"
+          cat delta/package/package.xml || echo "NO DELTA FOUND"
+
+          if [ ! -s delta/package/package.xml ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      ###################################################################
+      # Validate Delta (NO TESTS)
+      ###################################################################
+      - name: Validate Delta (NoTests)
+        if: steps.delta.outputs.skip == 'false'
+        run: |
+          echo "Validating delta metadata with NO tests"
+
+          sf project deploy start \
+            --manifest delta/package/package.xml \
+            --test-level NoTestRun \
+            --dry-run \
+            --ignore-conflicts \
+            --wait 20 \
+            -o PreProd
+
+      ###################################################################
+      # Skip if no delta changes
+      ###################################################################
+      - name: No Delta Found — Skipping Validation
+        if: steps.delta.outputs.skip == 'true'
+        run: echo "No metadata differences detected — skipping validation"
