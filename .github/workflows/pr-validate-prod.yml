@@ -4,19 +4,89 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     branches: [main]
+
 jobs:
   validate-prod:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: sfdx-actions/setup-sfdx@v1
 
-      - name: Auth to Prod Org
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # REQUIRED for delta generation
+
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+
+      - name: Install SFDX Git Delta
+        run: echo y | sf plugins install sfdx-git-delta
+
+      - name: Authenticate to Prod Org
         run: |
           echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > sfdx_auth.txt
-          sf org login sfdx-url -f sfdx_auth.txt -a Prod
+          sf org login sfdx-url -f sfdx_auth.txt --alias Prod
 
-      - name: Validate Deployment (CheckOnly)
+      ###################################################################
+      # Generate Delta Only for Validation
+      ###################################################################
+      - name: Generate Delta Package
+        id: delta
         run: |
-          sf project convert source --root-dir force-app --output-dir mdapi_output
-          sf project deploy start -d mdapi_output -o Prod --dry-run --wait 40 --test-level RunLocalTests
+          mkdir -p delta
+
+          sf sgd:source:delta \
+            --to "${{ github.event.pull_request.head.sha }}" \
+            --from "${{ github.event.pull_request.base.sha }}" \
+            --output-dir delta \
+            --generate-delta \
+            --source force-app/
+
+          echo "Delta Package XML:"
+          cat delta/package/package.xml || echo "No delta XML found"
+
+          if [ ! -s delta/package/package.xml ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+
+      ###################################################################
+      # Validate Using Specific Test Classes
+      ###################################################################
+      - name: Validate Delta (RunSpecifiedTests)
+        if: steps.delta.outputs.skip == 'false' && vars.PROD_TEST_CLASSES != 'ALL'
+        run: |
+          echo "Running specific tests: ${{ vars.PROD_TEST_CLASSES }}"
+
+          sf project deploy start \
+            --manifest delta/package/package.xml \
+            --test-level RunSpecifiedTests \
+            --tests "${{ vars.PROD_TEST_CLASSES }}" \
+            --dry-run \
+            --wait 40 \
+            -o Prod
+
+
+      ###################################################################
+      # Validate Using ALL Local Tests
+      ###################################################################
+      - name: Validate Delta (RunLocalTests)
+        if: steps.delta.outputs.skip == 'false' && vars.PROD_TEST_CLASSES == 'ALL'
+        run: |
+          echo "Running ALL LOCAL TESTS..."
+
+          sf project deploy start \
+            --manifest delta/package/package.xml \
+            --test-level RunLocalTests \
+            --dry-run \
+            --wait 40 \
+            -o Prod
+
+
+      ###################################################################
+      # Skip validation if no delta found
+      ###################################################################
+      - name: No Metadata to Validate
+        if: steps.delta.outputs.skip == 'true'
+        run: echo "No delta components found. Skipping validation."
