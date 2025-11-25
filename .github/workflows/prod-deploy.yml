@@ -1,4 +1,4 @@
-name: Deploy to Production (Hotfix + Auto Back-Sync)
+name: Deploy to Production (Hotfix + Delta Deploy + Auto Back-Sync)
 
 on:
   push:
@@ -8,21 +8,18 @@ on:
       - "force-app/**"
   workflow_dispatch:
 
-# Configure this in GitHub → Repo → Settings → Variables → SYNC_BRANCHES
-# Example value: preprodbranch uatbranch feature
 env:
   SYNC_BRANCHES: ${{ vars.SYNC_BRANCHES || 'preprodbranch uatbranch feature' }}
 
 jobs:
 
   ###########################################################################
-  # 1️⃣ DEPLOY TO PRODUCTION
+  # 1️⃣ DEPLOY DELTA TO PRODUCTION (with test logic)
   ###########################################################################
   deploy-production:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
@@ -31,18 +28,60 @@ jobs:
       - name: Install Salesforce CLI
         run: npm install -g @salesforce/cli
 
-      - name: Update Salesforce CLI
-        run: sf update
+      - name: Install SFDX Git Delta
+        run: echo y | sf plugins install sfdx-git-delta
 
       - name: Authenticate to Production
         run: |
           echo "${{ secrets.PROD_SFDX_AUTH_URL }}" > prod_auth.txt
           sf org login sfdx-url -f prod_auth.txt --alias prodorg --set-default
 
-      - name: Deploy to Production
+      ###################################################################
+      # Generate Only Delta Package
+      ###################################################################
+      - name: Generate Delta Package
+        id: delta
         run: |
+          mkdir -p delta
+          sf sgd:source:delta \
+            --to HEAD \
+            --from HEAD^ \
+            --output-dir delta \
+            --generate-delta \
+            --source force-app/
+
+          if [ ! -s delta/package/package.xml ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      ###################################################################
+      # Deploy to PROD - RunSpecifiedTests (if variable != ALL)
+      ###################################################################
+      - name: Deploy Delta to PROD - RunSpecifiedTests
+        if: steps.delta.outputs.skip == 'false' && vars.PROD_TEST_CLASSES != 'ALL'
+        run: |
+          echo "Running specific test classes: ${{ vars.PROD_TEST_CLASSES }}"
+
           sf project deploy start \
-            --source-dir force-app \
+            --manifest delta/package/package.xml \
+            --test-level RunSpecifiedTests \
+            --runtests "${{ vars.PROD_TEST_CLASSES }}" \
+            --ignore-conflicts \
+            --wait 40 \
+            -o prodorg
+
+      ###################################################################
+      # Deploy to PROD - RunLocalTests (if PROD_TEST_CLASSES = ALL)
+      ###################################################################
+      - name: Deploy Delta to PROD - RunLocalTests
+        if: steps.delta.outputs.skip == 'false' && vars.PROD_TEST_CLASSES == 'ALL'
+        run: |
+          echo "PROD_TEST_CLASSES=ALL → Running ALL LOCAL TESTS."
+
+          sf project deploy start \
+            --manifest delta/package/package.xml \
             --test-level RunLocalTests \
             --ignore-conflicts \
             --wait 40 \
@@ -50,7 +89,7 @@ jobs:
 
 
   ###########################################################################
-  # 2️⃣ DETECT HOTFIX MERGE (STRICT)
+  # 2️⃣ HOTFIX DETECTION (STRICT)
   ###########################################################################
   detect-hotfix:
     runs-on: ubuntu-latest
@@ -61,52 +100,38 @@ jobs:
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Detect Hotfix Merge (Safe)
+      - name: Detect Hotfix Merge
         id: check
         run: |
           echo "Detecting if merge came from hotfix/* branch…"
 
-          # 1) Get PR number safely from merge commit
           PR_NUMBER=$(git log -1 --pretty=%B | grep -oE 'pull request #[0-9]+' | grep -oE '[0-9]+' || true)
 
           if [[ -z "$PR_NUMBER" ]]; then
-            echo "No PR number found → Not a PR merge. Marking as NOT hotfix."
             echo "is_hotfix=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          echo "Detected PR number: $PR_NUMBER"
+          echo "PR number: $PR_NUMBER"
 
-          # 2) Call GitHub API safely
           PR_DATA=$(curl -s \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER || true)
+            https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER)
 
-          SOURCE_BRANCH=$(echo "$PR_DATA" | jq -r '.head.ref' 2>/dev/null || echo "")
+          SOURCE_BRANCH=$(echo "$PR_DATA" | jq -r '.head.ref')
 
-          if [[ -z "$SOURCE_BRANCH" || "$SOURCE_BRANCH" == "null" ]]; then
-            echo "Could not detect source branch → Marking as NOT hotfix."
-            echo "is_hotfix=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
+          echo "Source branch: $SOURCE_BRANCH"
 
-          echo "PR Source branch: $SOURCE_BRANCH"
-
-          # 3) Final check
           if [[ "$SOURCE_BRANCH" == hotfix* ]]; then
-            echo "🔥 HOTFIX MERGE DETECTED"
             echo "is_hotfix=true" >> $GITHUB_OUTPUT
           else
-            echo "⛔ Not a hotfix merge"
             echo "is_hotfix=false" >> $GITHUB_OUTPUT
           fi
 
-          exit 0
+
   ###########################################################################
-  # 3️⃣ AUTO BACK-SYNC TO LOWER ENVIRONMENT BRANCHES
+  # 3️⃣ AUTO BACK-SYNC AFTER HOTFIX MERGE
   ###########################################################################
   backsync:
     runs-on: ubuntu-latest
@@ -115,18 +140,16 @@ jobs:
 
     strategy:
       fail-fast: false
-      # convert "preprodbranch uatbranch feature" → ["preprodbranch","uatbranch","feature"]
       matrix:
         branch: ${{ fromJson(vars.SYNC_BRANCHES) }}
 
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup NodeJS (required by sync-branches)
+      - name: Setup NodeJS
         uses: actions/setup-node@v3
         with:
           node-version: 12
@@ -138,19 +161,15 @@ jobs:
           FROM_BRANCH: "main"
           TO_BRANCH: ${{ matrix.branch }}
 
-      - name: Find PR number for ${{ matrix.branch }}
+      - name: Find PR number
         id: find_pr
         run: |
-          echo "Searching for PR main -> ${{ matrix.branch }}"
-
           PR=$(curl -s \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/pulls?state=open&base=${{ matrix.branch }}&head=${{ github.repository_owner }}:main" \
             | jq -r '.[0].number')
 
-          echo "Found PR: $PR"
           echo "pr_number=$PR" >> $GITHUB_OUTPUT
-
 
       - name: Auto-merge PR
         if: steps.find_pr.outputs.pr_number != ''
@@ -158,13 +177,11 @@ jobs:
           PR=${{ steps.find_pr.outputs.pr_number }}
           echo "Auto-merging PR #$PR"
 
-          STATUS=$(curl -s -o merge_output.json -w "%{http_code}" \
+          curl -s -o merge_output.json -w "%{http_code}" \
             -X PUT \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/${{ github.repository }}/pulls/$PR/merge \
-            -d '{"merge_method":"merge"}')
+            -d '{"merge_method":"merge"}'
 
-          echo "HTTP: $STATUS"
           cat merge_output.json
-
