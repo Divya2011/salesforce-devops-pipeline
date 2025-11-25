@@ -2,21 +2,75 @@ name: PR Validate (UAT)
 
 on:
   pull_request:
-    branches: [uatBranchNew]   # Run when PR targets uatbranch
+    branches: [uatBranchNew]   # Trigger when PR points to UAT branch
 
 jobs:
   validate:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: sfdx-actions/setup-sfdx@v1
 
-      - name: Auth to UAT Org
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Required for delta generation
+
+      - name: Install Salesforce CLI
+        run: npm install -g @salesforce/cli
+
+      - name: Install SFDX Git Delta
+        run: echo y | sf plugins install sfdx-git-delta
+
+      - name: Authenticate to UAT Org
         run: |
           echo "${{ secrets.UAT_SFDX_AUTH_URL }}" > sfdx_auth.txt
-          sf org login sfdx-url -f sfdx_auth.txt -a UAT
+          sf org login sfdx-url -f sfdx_auth.txt --alias UAT
 
-      - name: Validate Deployment and Run Tests
+      ###################################################################
+      # Generate ONLY delta changes
+      ###################################################################
+      - name: Generate Delta Package
+        id: delta
         run: |
-          sfdx force:source:convert -r force-app -d mdapi_output
-          sf project deploy start -d mdapi_output -o UAT --dry-run --ignore-conflicts --wait 20 --test-level RunLocalTests
+          mkdir -p delta
+
+          # compare PR head vs base commits
+          sf sgd:source:delta \
+            --to "${{ github.event.pull_request.head.sha }}" \
+            --from "${{ github.event.pull_request.base.sha }}" \
+            --output-dir delta \
+            --generate-delta \
+            --source force-app/
+
+          echo "Delta Package XML:"
+          cat delta/package/package.xml || echo "NO DELTA FOUND"
+
+          # check if delta XML file exists & not empty
+          if [ ! -s delta/package/package.xml ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+
+      ###################################################################
+      # Validate Delta (No Test Execution)
+      ###################################################################
+      - name: Validate Delta (NoTests)
+        if: steps.delta.outputs.skip == 'false'
+        run: |
+          echo "Validating delta metadata with NO tests"
+
+          sf project deploy start \
+            --manifest delta/package/package.xml \
+            --test-level NoTestRun \
+            --dry-run \
+            --ignore-conflicts \
+            --wait 20 \
+            -o UAT
+
+      ###################################################################
+      # Skip when no delta found
+      ###################################################################
+      - name: No Delta Found — Skipping Validation
+        if: steps.delta.outputs.skip == 'true'
+        run: echo "No metadata differences detected — skipping validation"
