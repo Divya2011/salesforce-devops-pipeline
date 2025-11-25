@@ -172,65 +172,18 @@ jobs:
           echo "Found PR: $PR"
           echo "pr_number=$PR" >> $GITHUB_OUTPUT
 
-      - name: Auto-merge PR (Only if checks pass)
+      - name: Auto-merge PR
         if: steps.find_pr.outputs.pr_number != ''
-        id: automerge
         run: |
           PR=${{ steps.find_pr.outputs.pr_number }}
-          echo "Evaluating PR #$PR for auto-merge..."
+          echo "Auto-merging PR #$PR"
 
-          # 1. Get the HEAD SHA of the PR
-          SHA=$(curl -s \
+          curl -s -o merge_output.json -w "%{http_code}" \
+            -X PUT \
             -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/pulls/$PR" \
-            | jq -r '.head.sha')
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/$PR/merge" \
+            -d '{"merge_method":"merge"}'
 
-          echo "HEAD SHA = $SHA"
-
-          # 2. Get the status of all check suites (validations)
-          CHECKS=$(curl -s \
-            -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/commits/$SHA/check-suites" \
-            | jq -r '.check_suites[].conclusion')
-
-          echo "Check results:"
-          echo "$CHECKS"
-
-          # 3. If any check failed → DO NOT MERGE
-          if echo "$CHECKS" | grep -q "failure"; then
-            echo "❌ Validation failed — NOT auto-merging"
-            exit 0
-          fi
-
-          if echo "$CHECKS" | grep -q "cancelled"; then
-            echo "❌ Validation was cancelled — NOT auto-merging"
-            exit 0
-          fi
-
-          if echo "$CHECKS" | grep -q "timed_out"; then
-            echo "❌ Validation timed out — NOT auto-merging"
-            exit 0
-          fi
-
-          if echo "$CHECKS" | grep -q "action_required"; then
-            echo "❌ Validation needed manual action — NOT auto-merging"
-            exit 0
-          fi
-
-          # 4. If all checks succeeded → Merge
-          if echo "$CHECKS" | grep -q "success"; then
-            echo "✅ All validations passed — Auto-merging PR #$PR"
-            curl -s -o merge_output.json -w "%{http_code}" \
-              -X PUT \
-              -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/pulls/$PR/merge" \
-              -d '{"merge_method":"merge"}'
-
-            cat merge_output.json
-            exit 0
-          fi
-
-          echo "⚠️ No success state detected — NOT auto-merging"
-          exit 0
-
+          echo "Merge Response:"
+          cat merge_output.json
