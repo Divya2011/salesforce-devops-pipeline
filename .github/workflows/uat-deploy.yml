@@ -3,23 +3,27 @@ name: Deploy to UAT
 on:
   push:
     branches:
-      - uatBranchNew # Or the branch you merge to for UAT deployments
+      - uatBranchNew  # When UAT branch is updated
     paths:
       - 'force-app/**'
-  workflow_dispatch: # Allows manual triggering
+
+  workflow_dispatch:  # Manual trigger allowed
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Required for delta
 
       - name: Install Salesforce CLI
         run: npm install -g @salesforce/cli
 
-      - name: Update Salesforce CLI
-        run: sf update
+      - name: Install SFDX Git Delta
+        run: echo y | sf plugins install sfdx-git-delta
 
       - name: Authenticate to Salesforce Org (UAT)
         run: |
@@ -28,13 +32,50 @@ jobs:
         env:
           UAT_SFDX_AUTH_URL: ${{ secrets.UAT_SFDX_AUTH_URL }}
 
-      # Option 1 (Recommended) - Direct deployment of source folder
-      - name: Deploy to UAT
-        run: sf project deploy start --source-dir force-app --test-level RunLocalTests -o uatorg --ignore-conflicts --wait 40
+      ###################################################################
+      # Generate Delta
+      ###################################################################
+      - name: Generate Delta Package
+        id: delta
+        run: |
+          mkdir -p delta
 
-      # Option 2 (If you prefer manifest-based deployment)
-      # - name: Generate Manifest
-      #   run: sf project generate manifest --from-source --output-dir manifest
-      #
-      # - name: Deploy using Manifest
-      #   run: sf project deploy start --metadata-dir manifest --test-level RunLocalTests -o uatorg --ignore-conflicts --wait 40
+          # Latest commit on UAT = $GITHUB_SHA
+          # Previous commit before the push = HEAD^
+          sf sgd:source:delta \
+            --to "$GITHUB_SHA" \
+            --from "HEAD^" \
+            --output-dir delta \
+            --generate-delta \
+            --source force-app/
+
+          echo "Delta Package XML:"
+          cat delta/package/package.xml || echo "NO DELTA FOUND"
+
+          if [ ! -s delta/package/package.xml ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      ###################################################################
+      # DEPLOY DELTA (NO TESTS)
+      ###################################################################
+      - name: Deploy Delta to UAT (No Tests)
+        if: steps.delta.outputs.skip == 'false'
+        run: |
+          echo "Deploying DELTA to UAT with NO TESTS..."
+
+          sf project deploy start \
+            --manifest delta/package/package.xml \
+            --test-level NoTestRun \
+            --ignore-conflicts \
+            --wait 40 \
+            -o uatorg
+
+      ###################################################################
+      # Skip when no metadata changed
+      ###################################################################
+      - name: Skip Deployment (No Delta Found)
+        if: steps.delta.outputs.skip == 'true'
+        run: echo "No metadata changes detected — skipping deployment."
